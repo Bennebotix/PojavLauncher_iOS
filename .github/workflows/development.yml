@@ -1,20 +1,20 @@
 name: Development build
 
 on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - 'l10n_main'
   pull_request:
     branches-ignore:
       - 'l10n_main'
     types: [opened, reopened]
-  push:
-    branches-ignore:
-      - 'l10n_main'
-  workflow_dispatch:
 
 jobs:
   build:
     name: Development build
+    runs-on: macos-14 # modern macOS runner
     strategy:
-      fail-fast: false
       matrix:
         include:
           - platform: 2
@@ -24,152 +24,36 @@ jobs:
           - platform: 8
             platform_name: tvossimulator
 
-    runs-on: macos-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: true
-          fetch-depth: 0
+          submodules: recursive
 
-      - name: Get gl4es latest commit hash
-        id: gl4es-sha
-        shell: bash
+      - name: Install dependencies
         run: |
-          sha=$(git ls-remote https://github.com/PojavLauncherTeam/gl4es-114-extra refs/heads/master | awk '{print $1}')
-          echo "sha=$sha" >> $GITHUB_OUTPUT
-
-      - name: Cache gl4es
-        uses: actions/cache@v3
-        if: false # set to true if you want to enable gl4es caching
-        id: gl4es-cache
-        with:
-          path: gl4es/libs
-          key: gl4es-holy-ios-shared-2-${{ steps.gl4es-sha.outputs.sha }}
-
-      - name: Get JRE8
-        uses: dawidd6/action-download-artifact@v2
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: build.yml
-          path: depends
-          workflow_conclusion: success
-          allow_forks: false
-          repo: PojavLauncherTeam/android-openjdk-build-multiarch
-          branch: buildjre8
-          name: jre8-ios-aarch64
-
-      - name: Get JRE17
-        uses: dawidd6/action-download-artifact@v2
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: build.yml
-          path: depends
-          workflow_conclusion: completed
-          allow_forks: false
-          repo: PojavLauncherTeam/android-openjdk-build-multiarch
-          branch: buildjre17-21
-          name: jre17-ios-aarch64
-
-      - name: Get JRE21
-        uses: dawidd6/action-download-artifact@v2
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: build.yml
-          path: depends
-          workflow_conclusion: completed
-          allow_forks: false
-          repo: PojavLauncherTeam/android-openjdk-build-multiarch
-          branch: buildjre17-21
-          name: jre21-ios-aarch64
-
-      - name: Ensure JREs or fallback to system JDK
-        id: ensure-jres
-        shell: bash
-        run: |
-          set -e
-          echo "Checking for downloaded JREs in depends/..."
-          ls -lah depends || true
-
-          if [ -d "depends/jre8" ] || [ -d "depends/jre17" ] || [ -d "depends/jre21" ]; then
-            echo "Found JRE artifacts in depends/ — using them."
-            echo "fallback=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "No JRE artifacts found — attempting Homebrew JDK fallback."
-          echo "fallback=true" >> $GITHUB_OUTPUT
-
-          which brew >/dev/null 2>&1 || {
-            echo "Installing Homebrew..."
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            eval "$(/opt/homebrew/bin/brew shellenv)" || true
-          }
-
-          echo "Installing Temurin JDKs..."
-          brew update || true
-          brew tap homebrew/cask-versions || true
-          brew install --cask temurin8 || echo "temurin8 not available"
-          brew install --cask temurin17 || echo "temurin17 not available"
-          brew install --cask temurin21 || echo "temurin21 not available"
-
-          if /usr/libexec/java_home -v 17 >/dev/null 2>&1; then
-            export JAVA_HOME=$(/usr/libexec/java_home -v 17)
-          elif /usr/libexec/java_home -v 21 >/dev/null 2>&1; then
-            export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-          elif /usr/libexec/java_home -v 1.8 >/dev/null 2>&1; then
-            export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
-          fi
-          echo "JAVA_HOME=${JAVA_HOME:-not-set}"
-          echo "Fallback JDK setup attempted."
+          brew update
+          brew install --cask temurin
+          brew install --cask temurin17
+          brew install --cask temurin11
+          export JAVA_HOME=$(/usr/libexec/java_home -v 17 || /usr/libexec/java_home -v 21)
+          echo "JAVA_HOME=$JAVA_HOME"
 
       - name: Build for ${{ matrix.platform_name }}
-        env:
-          RUNNER: 1
-          SLIMMED: 1
-        shell: bash
         run: |
           export PATH=/opt/procursus/bin:/opt/homebrew/bin:$PATH
-          if [ "${{ matrix.platform_name }}" = "ios" ]; then
+          export RUNNER=1 SLIMMED=1
+          if [ "${{ matrix.platform_name }}" == "ios" ]; then
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }}
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }} TROLLSTORE_JIT_ENT=1
-          elif [ "${{ matrix.platform_name }}" = "tvossimulator" ]; then
+          elif [ "${{ matrix.platform_name }}" == "tvos" ]; then
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }} TROLLSTORE_JIT_ENT=1
           else
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }}
           fi
 
-      - name: Upload regular ipa
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: net.kdt.pojavlauncher-${{ matrix.platform_name }}.ipa
           path: artifacts/net.kdt.pojavlauncher-*-${{ matrix.platform_name }}.ipa
-
-      - name: Upload regular tipa
-        uses: actions/upload-artifact@v4
-        with:
-          name: net.kdt.pojavlauncher-${{ matrix.platform_name }}-trollstore.tipa
-          path: artifacts/net.kdt.pojavlauncher-*-${{ matrix.platform_name }}-trollstore.tipa
-
-      - name: Upload slimmed ipa
-        uses: actions/upload-artifact@v4
-        with:
-          name: net.kdt.pojavlauncher.slimmed-${{ matrix.platform_name }}.ipa
-          path: artifacts/net.kdt.pojavlauncher.slimmed-*-${{ matrix.platform_name }}.ipa
-
-      - name: Upload slimmed tipa
-        uses: actions/upload-artifact@v4
-        with:
-          name: net.kdt.pojavlauncher.slimmed-${{ matrix.platform_name }}-trollstore.tipa
-          path: artifacts/net.kdt.pojavlauncher.slimmed-*-${{ matrix.platform_name }}-trollstore.tipa
-
-      - name: Upload PojavLauncher.dSYM
-        if: ${{ matrix.platform_name == 'ios' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: PojavLauncher.dSYM
-          path: artifacts/PojavLauncher.dSYM
