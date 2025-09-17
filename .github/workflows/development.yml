@@ -14,6 +14,7 @@ jobs:
   build:
     name: Development build
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: 2
@@ -23,8 +24,6 @@ jobs:
           - platform: 8
             platform_name: tvossimulator
 
-    # Use GitHub-hosted macOS runner. If you need a self-hosted MacStadium runner,
-    # replace with: runs-on: [self-hosted, MacStadium] and ensure your runner labels match.
     runs-on: macos-latest
 
     steps:
@@ -49,40 +48,9 @@ jobs:
           path: gl4es/libs
           key: gl4es-holy-ios-shared-2-${{ steps.gl4es-sha.outputs.sha }}
 
-      - name: Get gl4es
-        if: false && steps.gl4es-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: 'PojavLauncherTeam/gl4es-114-extra'
-          path: 'gl4es'
-
-      - name: Build gl4es
-        if: false && steps.gl4es-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        shell: bash
-        run: |
-          cd gl4es
-          git config --global user.email "github-actions@users.noreply.github.com"
-          git config --global user.name "github-actions"
-          export PATH=/opt/procursus/bin:$PATH
-          wget https://github.com/leetal/ios-cmake/raw/master/ios.toolchain.cmake
-          cmake -B build -DCMAKE_TOOLCHAIN_FILE=ios.toolchain.cmake -DDEFAULT_ES=2 \
-            -DNOX11=ON -DNOEGL=OFF -DSTATICLIB=OFF -DPLATFORM=OS64 \
-            -DCMAKE_C_FLAGS=-Wno-error=implicit-function-declaration
-          cmake --build build --config RelWithDebInfo --target GL
-          cp -R lib/libGL.dylib ../Natives/resources/Frameworks/libgl4es_114.dylib
-
-      - name: Push gl4es
-        if: false && github.event_name != 'pull_request' && github.ref_name == 'main' && steps.gl4es-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        shell: bash
-        run: |
-          git add Natives/resources/Frameworks/libgl4es_114.dylib
-          git commit -am "CI: Update gl4es" || true
-          git push || true
-
       - name: Get JRE8
         uses: dawidd6/action-download-artifact@v2
+        continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           workflow: build.yml
@@ -95,6 +63,7 @@ jobs:
 
       - name: Get JRE17
         uses: dawidd6/action-download-artifact@v2
+        continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           workflow: build.yml
@@ -107,6 +76,7 @@ jobs:
 
       - name: Get JRE21
         uses: dawidd6/action-download-artifact@v2
+        continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           workflow: build.yml
@@ -117,6 +87,46 @@ jobs:
           branch: buildjre17-21
           name: jre21-ios-aarch64
 
+      - name: Ensure JREs or fallback to system JDK
+        id: ensure-jres
+        shell: bash
+        run: |
+          set -e
+          echo "Checking for downloaded JREs in depends/..."
+          ls -lah depends || true
+
+          if [ -d "depends/jre8" ] || [ -d "depends/jre17" ] || [ -d "depends/jre21" ]; then
+            echo "Found JRE artifacts in depends/ — using them."
+            echo "fallback=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "No JRE artifacts found — attempting Homebrew JDK fallback."
+          echo "fallback=true" >> $GITHUB_OUTPUT
+
+          which brew >/dev/null 2>&1 || {
+            echo "Installing Homebrew..."
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            eval "$(/opt/homebrew/bin/brew shellenv)" || true
+          }
+
+          echo "Installing Temurin JDKs..."
+          brew update || true
+          brew tap homebrew/cask-versions || true
+          brew install --cask temurin8 || echo "temurin8 not available"
+          brew install --cask temurin17 || echo "temurin17 not available"
+          brew install --cask temurin21 || echo "temurin21 not available"
+
+          if /usr/libexec/java_home -v 17 >/dev/null 2>&1; then
+            export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+          elif /usr/libexec/java_home -v 21 >/dev/null 2>&1; then
+            export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+          elif /usr/libexec/java_home -v 1.8 >/dev/null 2>&1; then
+            export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+          fi
+          echo "JAVA_HOME=${JAVA_HOME:-not-set}"
+          echo "Fallback JDK setup attempted."
+
       - name: Build for ${{ matrix.platform_name }}
         env:
           RUNNER: 1
@@ -124,16 +134,12 @@ jobs:
         shell: bash
         run: |
           export PATH=/opt/procursus/bin:/opt/homebrew/bin:$PATH
-          # matrix.platform_name is expanded by GitHub before running the shell script
           if [ "${{ matrix.platform_name }}" = "ios" ]; then
-            # Build ipa and tipa for iOS
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }}
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }} TROLLSTORE_JIT_ENT=1
           elif [ "${{ matrix.platform_name }}" = "tvossimulator" ]; then
-            # Build tipa only for tvOS simulator (adjust as needed)
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }} TROLLSTORE_JIT_ENT=1
           else
-            # Build ipa only for everything else (iossimulator)
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }}
           fi
 
